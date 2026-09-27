@@ -31,7 +31,7 @@ class Record(db.Model):
     normalized_number = db.Column(db.String(80), unique=True, nullable=False, index=True)
     created_by_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     created_by_name = db.Column(db.String(120), nullable=False)
-    channel = db.Column(db.String(120), nullable=False)
+    channel = db.Column(db.String(120), nullable=False, default='')  # legacy compatibility; no longer used
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
     status = db.Column(db.String(20), nullable=False, default='正常')
     duplicate_count = db.Column(db.Integer, nullable=False, default=0)
@@ -42,7 +42,7 @@ class DuplicateEvent(db.Model):
     attempted_by_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     attempted_by_name = db.Column(db.String(120), nullable=False)
     attempted_number = db.Column(db.String(160), nullable=False)
-    channel = db.Column(db.String(120), nullable=False)
+    channel = db.Column(db.String(120), nullable=False, default='')  # legacy compatibility; no longer used
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
 
 
@@ -138,13 +138,10 @@ def create_app():
     def add_batch():
         data = request.get_json(silent=True) or {}
         raw_numbers = data.get('numbers', [])
-        channel = str(data.get('channel', '')).strip()
         if isinstance(raw_numbers, str):
             raw_numbers = split_numbers(raw_numbers)
         if not isinstance(raw_numbers, list) or not raw_numbers:
             return jsonify(error='请输入至少一个号码'), 400
-        if not channel:
-            return jsonify(error='请输入渠道'), 400
         if len(raw_numbers) > 10000:
             return jsonify(error='单次最多提交 10,000 个号码'), 400
 
@@ -165,7 +162,6 @@ def create_app():
                     attempted_by_user_id=user.id,
                     attempted_by_name=user.display_name,
                     attempted_number=raw,
-                    channel=channel,
                 )
                 db.session.add(evt)
                 results.append({
@@ -174,7 +170,6 @@ def create_app():
                     'result': 'duplicate',
                     'owner': existing.created_by_name,
                     'duplicate_count': existing.duplicate_count,
-                    'original_channel': existing.channel,
                     'original_created_at': format_et(existing.created_at),
                 })
                 continue
@@ -184,7 +179,6 @@ def create_app():
                 normalized_number=normalized,
                 created_by_user_id=user.id,
                 created_by_name=user.display_name,
-                channel=channel,
                 status='正常',
             )
             db.session.add(rec)
@@ -201,7 +195,6 @@ def create_app():
                         attempted_by_user_id=user.id,
                         attempted_by_name=user.display_name,
                         attempted_number=raw,
-                        channel=channel,
                     ))
                     results.append({
                         'number': raw,
@@ -209,7 +202,6 @@ def create_app():
                         'result': 'duplicate',
                         'owner': existing.created_by_name,
                         'duplicate_count': existing.duplicate_count,
-                        'original_channel': existing.channel,
                         'original_created_at': format_et(existing.created_at),
                     })
                 else:
@@ -228,9 +220,9 @@ def create_app():
             nq = normalize_number(q)
             pattern = f'%{q}%'
             if nq:
-                query = query.filter(db.or_(Record.normalized_number.contains(nq), Record.created_by_name.ilike(pattern), Record.channel.ilike(pattern)))
+                query = query.filter(db.or_(Record.normalized_number.contains(nq), Record.created_by_name.ilike(pattern)))
             else:
-                query = query.filter(db.or_(Record.created_by_name.ilike(pattern), Record.channel.ilike(pattern)))
+                query = query.filter(Record.created_by_name.ilike(pattern))
         if status:
             query = query.filter_by(status=status)
         rows = query.order_by(Record.id.desc()).limit(5000).all()
@@ -267,9 +259,9 @@ def create_app():
     def export_records():
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(['客户号码', '录入人', '渠道', '录入时间(ET)', '状态', '重粉次数'])
+        writer.writerow(['客户号码', '录入人', '录入时间(ET)', '状态', '重粉次数'])
         for r in Record.query.order_by(Record.id.asc()).all():
-            writer.writerow([r.customer_number, r.created_by_name, r.channel, format_et(r.created_at), r.status, r.duplicate_count])
+            writer.writerow([r.customer_number, r.created_by_name, format_et(r.created_at), r.status, r.duplicate_count])
         csv_bytes = '\ufeff' + output.getvalue()
         return Response(csv_bytes, mimetype='text/csv; charset=utf-8', headers={'Content-Disposition':'attachment; filename=repeat-records.csv'})
 
@@ -362,7 +354,6 @@ def serialize_record(r, limited=False):
         'id': r.id,
         'customer_number': r.customer_number,
         'created_by': r.created_by_name,
-        'channel': r.channel,
         'created_at': format_et(r.created_at),
         'status': r.status,
         'duplicate_count': r.duplicate_count,
